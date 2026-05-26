@@ -115,50 +115,97 @@ def generate_report(player: str, league: str, stats: str) -> str:
     return "".join(block.text for block in response.content if block.type == "text")
 
 
+def discover_players(league: str, position: str, target_level: str) -> str:
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = (
+        f"You are a soccer scout. List the top 5 players in {league} at position {position} "
+        f"who would be realistic transfer targets for a {target_level} club. "
+        f"For each player provide: name, age, club, key stats if known, USL translation rating out of 10, "
+        f"and one sentence on why they fit. Format as a clean numbered list with markdown."
+    )
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
 st.set_page_config(page_title="ScoutAI", page_icon=None, layout="centered")
 
 st.title("ScoutAI")
 st.caption("International soccer scouting, powered by Claude.")
 
-player_name = st.text_input("Player name")
-league = st.selectbox("League", LEAGUES)
-stats = st.text_area("Stats (optional)", height=150, placeholder="Goals, assists, xG, minutes, etc.")
+tab_report, tab_discovery = st.tabs(["Scouting Report", "Find Players"])
 
-if st.button("Generate scouting report", type="primary"):
-    if not ANTHROPIC_API_KEY:
-        st.error("ANTHROPIC_API_KEY is not set. Add it at the top of app.py.")
-    elif not player_name.strip():
-        st.warning("Enter a player name.")
-    else:
-        with st.spinner("Scouting..."):
-            try:
-                live_stats = fetch_player_stats(player_name, league)
-                if live_stats:
-                    st.caption("📚 Stats sourced from Claude knowledge base")
-                    combined_stats = (
-                        f"[Claude-sourced stats]\n{live_stats}\n\n[Additional notes]\n{stats.strip()}"
-                        if stats.strip()
-                        else f"[Claude-sourced stats]\n{live_stats}"
-                    )
-                else:
-                    combined_stats = stats
-                report = generate_report(player_name, league, combined_stats)
-                verdict = extract_verdict(report)
-                if verdict == "SIGN":
-                    st.success("### Verdict: SIGN ✅")
-                elif verdict == "MONITOR":
-                    st.warning("### Verdict: MONITOR ⚠️")
-                elif verdict == "PASS":
-                    st.error("### Verdict: PASS ❌")
-                score, label = LEAGUE_QUALITY[league]
-                st.subheader("League Quality vs USL")
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    st.metric(label=league, value=f"{score}/10")
-                with col2:
-                    st.progress(score / 10)
-                    st.caption(label)
-                st.divider()
-                st.markdown(report)
-            except Exception as e:
-                st.error(f"Request failed: {e}")
+with tab_report:
+    player_name = st.text_input("Player name")
+    league = st.selectbox("League", LEAGUES)
+    stats = st.text_area("Stats (optional)", height=150, placeholder="Goals, assists, xG, minutes, etc.")
+
+    if st.button("Generate scouting report", type="primary"):
+        if not ANTHROPIC_API_KEY:
+            st.error("ANTHROPIC_API_KEY is not set. Add it at the top of app.py.")
+        elif not player_name.strip():
+            st.warning("Enter a player name.")
+        else:
+            with st.spinner("Scouting..."):
+                try:
+                    live_stats = fetch_player_stats(player_name, league)
+                    if live_stats:
+                        st.caption("📚 Stats sourced from Claude knowledge base")
+                        combined_stats = (
+                            f"[Claude-sourced stats]\n{live_stats}\n\n[Additional notes]\n{stats.strip()}"
+                            if stats.strip()
+                            else f"[Claude-sourced stats]\n{live_stats}"
+                        )
+                    else:
+                        combined_stats = stats
+                    report = generate_report(player_name, league, combined_stats)
+                    verdict = extract_verdict(report)
+                    if verdict == "SIGN":
+                        st.success("### Verdict: SIGN ✅")
+                    elif verdict == "MONITOR":
+                        st.warning("### Verdict: MONITOR ⚠️")
+                    elif verdict == "PASS":
+                        st.error("### Verdict: PASS ❌")
+                    score, label = LEAGUE_QUALITY[league]
+                    st.subheader("League Quality vs USL")
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        st.metric(label=league, value=f"{score}/10")
+                    with col2:
+                        st.progress(score / 10)
+                        st.caption(label)
+                    st.divider()
+                    st.markdown(report)
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
+
+with tab_discovery:
+    st.subheader("Player Discovery")
+    st.caption("Surface transfer targets by league, position, and destination tier.")
+
+    discovery_league = st.selectbox("League", LEAGUES, key="discovery_league")
+    position = st.selectbox("Position", ["Striker", "Midfielder", "Defender", "Goalkeeper"])
+    target_level = st.selectbox("Target level", ["MLS", "USL Championship", "USL League One"])
+
+    if st.button("Find Players", type="primary", key="discovery_button"):
+        if not ANTHROPIC_API_KEY:
+            st.error("ANTHROPIC_API_KEY is not set. Add it at the top of app.py.")
+        else:
+            with st.spinner("Searching..."):
+                try:
+                    results = discover_players(discovery_league, position, target_level)
+                    d_score, d_label = LEAGUE_QUALITY[discovery_league]
+                    st.subheader("Recommended Targets")
+                    meta_col1, meta_col2, meta_col3 = st.columns(3)
+                    meta_col1.metric("League", discovery_league)
+                    meta_col2.metric("Position", position)
+                    meta_col3.metric("Target", target_level)
+                    st.progress(d_score / 10)
+                    st.caption(f"{discovery_league}: {d_label}")
+                    st.divider()
+                    st.markdown(results)
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
