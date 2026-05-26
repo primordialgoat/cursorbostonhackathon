@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from typing import Optional
@@ -72,6 +73,37 @@ def extract_verdict(report: str) -> Optional[str]:
     return match.group(1).upper() if match else None
 
 
+STAT_FIELDS = ["goals", "assists", "appearances", "position", "age", "club"]
+
+
+def fetch_player_stats(player_name: str, league: str) -> Optional[str]:
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = (
+        f"Return only a JSON object with real stats for {player_name} in {league}. "
+        f"Fields: goals, assists, appearances, position, age, club. "
+        f"If you don't know exact stats, use null for that field."
+    )
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(block.text for block in response.content if block.type == "text").strip()
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        data = json.loads(match.group(0))
+        lines = []
+        for key in STAT_FIELDS:
+            value = data.get(key)
+            if value is not None:
+                lines.append(f"{key.capitalize()}: {value}")
+        return "\n".join(lines) if lines else None
+    except Exception:
+        return None
+
+
 def generate_report(player: str, league: str, stats: str) -> str:
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
@@ -100,7 +132,17 @@ if st.button("Generate scouting report", type="primary"):
     else:
         with st.spinner("Scouting..."):
             try:
-                report = generate_report(player_name, league, stats)
+                live_stats = fetch_player_stats(player_name, league)
+                if live_stats:
+                    st.caption("📚 Stats sourced from Claude knowledge base")
+                    combined_stats = (
+                        f"[Claude-sourced stats]\n{live_stats}\n\n[Additional notes]\n{stats.strip()}"
+                        if stats.strip()
+                        else f"[Claude-sourced stats]\n{live_stats}"
+                    )
+                else:
+                    combined_stats = stats
+                report = generate_report(player_name, league, combined_stats)
                 verdict = extract_verdict(report)
                 if verdict == "SIGN":
                     st.success("### Verdict: SIGN ✅")
