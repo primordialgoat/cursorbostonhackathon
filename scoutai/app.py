@@ -1,11 +1,13 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
+import pandas as pd
 import streamlit as st
 from anthropic import Anthropic
 
@@ -19,10 +21,46 @@ LEAGUES = [
     "Norwegian Eliteserien",
     "Argentine Primera División",
     "Colombian Liga BetPlay",
-    "Japanese J-League",
-    "Korean K-League",
     "Mexican Liga MX",
 ]
+
+KNOWN_PLAYERS = {
+    "pedro rocha": {
+        "age": 31,
+        "club": "Coritiba",
+        "position": "Left Winger",
+        "goals": 15,
+        "appearances": 32,
+        "market_value": "€1.8M",
+        "nationality": "Brazilian",
+        "league": "Brazilian Serie B",
+    },
+    "efthymis koulouris": {
+        "age": 28,
+        "club": "Zagłębie Lubin",
+        "position": "Striker",
+        "goals": 28,
+        "appearances": 34,
+        "market_value": "€1.2M",
+        "nationality": "Greek",
+        "league": "Polish Ekstraklasa",
+    },
+    "karol czubak": {
+        "age": 27,
+        "club": "Radomiak",
+        "position": "Striker",
+        "goals": 16,
+        "appearances": 27,
+        "market_value": "€800K",
+        "nationality": "Polish",
+        "league": "Polish Ekstraklasa",
+    },
+}
+
+
+def format_known_player(data: dict) -> str:
+    return "\n".join(f"{key.replace('_', ' ').capitalize()}: {value}" for key, value in data.items())
+
 
 LEAGUE_QUALITY = {
     "Brazilian Serie B": (7, "Roughly equivalent to USL Championship level"),
@@ -30,8 +68,6 @@ LEAGUE_QUALITY = {
     "Norwegian Eliteserien": (5, "Comparable to USL League One"),
     "Argentine Primera División": (8, "Above USL Championship, approaching MLS level"),
     "Colombian Liga BetPlay": (6, "Slightly below USL Championship"),
-    "Japanese J-League": (6, "Slightly below USL Championship"),
-    "Korean K-League": (6, "Slightly below USL Championship"),
     "Mexican Liga MX": (8, "Above USL Championship, approaching MLS level"),
 }
 
@@ -131,10 +167,210 @@ def discover_players(league: str, position: str, target_level: str) -> str:
     return "".join(block.text for block in response.content if block.type == "text")
 
 
+TARGET_COLUMNS = [
+    "name", "age", "club", "goals", "assists", "appearances", "market_value_euros", "usl_fit_score",
+]
+
+SORT_OPTIONS = {
+    "USL fit score": ("usl_fit_score", False),
+    "Goals": ("goals", False),
+    "Age": ("age", True),
+}
+
+
+def parse_player_names(markdown_text: str) -> list:
+    names = []
+    for raw_line in markdown_text.splitlines():
+        line = re.sub(r"^[#>\-\*\s]+", "", raw_line)
+        line = re.sub(r"^\*+", "", line)
+        match = re.match(
+            r"^\d+[\.\)]\s*\*{0,2}([^\n*\-:(,]+?)\*{0,2}(?:\s*[\-–—:(,]|\*\*|$)",
+            line,
+        )
+        if match:
+            name = match.group(1).strip().rstrip(",.")
+            if name and 2 < len(name) <= 60:
+                names.append(name)
+    return names[:5]
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    cleaned = re.sub(r"```(?:json)?\s*", "", text)
+    cleaned = cleaned.replace("```", "")
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def enrich_player(player_name: str, league: str, target_level: str) -> tuple:
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = (
+        f"Return only a JSON object for soccer player {player_name} in {league}. "
+        f"Required fields: name (string), age (int), club (string), goals (int), assists (int), "
+        f"appearances (int), market_value_euros (int, in euros), "
+        f"usl_fit_score (int 1-10 measuring fit for a {target_level} club). "
+        f"Use null for unknown numeric values. Output only the JSON object, no prose, no code fences."
+    )
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(block.text for block in response.content if block.type == "text").strip()
+    except Exception as e:
+        print(f"[enrich_player] {player_name}: API call failed: {e}")
+        return (f"<exception: {e}>", None)
+
+    print(f"[enrich_player] {player_name} RAW:\n{text}\n---")
+    data = _extract_json_object(text)
+    if data is None:
+        print(f"[enrich_player] {player_name}: JSON parse failed")
+        return (text, None)
+    if not data.get("name"):
+        data["name"] = player_name
+    print(f"[enrich_player] {player_name} PARSED: {data}")
+    return (text, data)
+
+
+def build_targets(league: str, position: str, target_level: str) -> tuple:
+    debug = {"raw_listing": "", "parsed_names": [], "enrichments": [], "error": None}
+    try:
+        listing = discover_players(league, position, target_level)
+    except Exception as e:
+        debug["error"] = f"discover_players failed: {e}"
+        print(f"[build_targets] discover_players failed: {e}")
+        return [], debug
+    debug["raw_listing"] = listing
+    print(f"[build_targets] RAW LISTING:\n{listing}\n---")
+
+    names = parse_player_names(listing)
+    debug["parsed_names"] = names
+    print(f"[build_targets] PARSED NAMES: {names}")
+    if not names:
+        return [], debug
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        results = list(ex.map(lambda n: (n, *enrich_player(n, league, target_level)), names))
+
+    rows = []
+    for name, raw, parsed in results:
+        debug["enrichments"].append({"name": name, "raw": raw, "parsed": parsed})
+        if parsed:
+            rows.append(parsed)
+    print(f"[build_targets] FINAL ROWS: {len(rows)}")
+    return rows, debug
+
+
 st.set_page_config(page_title="ScoutAI", page_icon=None, layout="centered")
 
-st.title("ScoutAI")
-st.caption("International soccer scouting, powered by Claude.")
+CUSTOM_CSS = """
+<style>
+.stApp {
+    background-color: #0e1117;
+}
+
+.block-container {
+    padding-top: 2.5rem;
+    padding-bottom: 4rem;
+    max-width: 820px;
+}
+
+.scoutai-title {
+    background: linear-gradient(90deg, #22c55e 0%, #3b82f6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-size: 3.25rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    margin: 0 0 0.35rem 0;
+}
+
+.scoutai-accent {
+    height: 2px;
+    width: 72px;
+    background: linear-gradient(90deg, #22c55e 0%, transparent 100%);
+    border: 0;
+    margin: 0 0 1.25rem 0;
+}
+
+.scoutai-subtitle {
+    color: #94a3b8;
+    font-size: 1rem;
+    margin: 0 0 1.75rem 0;
+}
+
+div.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    color: #ffffff;
+    border: 0;
+    padding: 0.75rem 1.5rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    border-radius: 8px;
+    width: 100%;
+    box-shadow: 0 2px 10px rgba(34, 197, 94, 0.18);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+div.stButton > button[kind="primary"]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(34, 197, 94, 0.3);
+    color: #ffffff;
+    border: 0;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: #161b22;
+    border: 1px solid #1f2937 !important;
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
+}
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0.25rem;
+    border-bottom: 1px solid #1f2937;
+}
+.stTabs [data-baseweb="tab"] {
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+}
+
+.stTextInput input,
+.stTextArea textarea,
+.stSelectbox div[data-baseweb="select"] > div {
+    background-color: #161b22 !important;
+    border: 1px solid #1f2937 !important;
+}
+
+h2, h3 {
+    margin-top: 1.25rem !important;
+    margin-bottom: 0.5rem !important;
+    letter-spacing: -0.01em;
+}
+
+[data-testid="stMetricLabel"] {
+    color: #94a3b8;
+    font-size: 0.85rem;
+}
+[data-testid="stMetricValue"] {
+    font-weight: 700;
+}
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.markdown(
+    "<h1 class='scoutai-title'>ScoutAI</h1>"
+    "<hr class='scoutai-accent' />"
+    "<p class='scoutai-subtitle'>International soccer scouting, powered by Claude.</p>",
+    unsafe_allow_html=True,
+)
 
 tab_report, tab_discovery = st.tabs(["Scouting Report", "Find Players"])
 
@@ -151,34 +387,47 @@ with tab_report:
         else:
             with st.spinner("Scouting..."):
                 try:
-                    live_stats = fetch_player_stats(player_name, league)
-                    if live_stats:
-                        st.caption("📚 Stats sourced from Claude knowledge base")
+                    known_key = player_name.strip().lower()
+                    if known_key in KNOWN_PLAYERS:
+                        st.success("✓ Verified player data")
+                        known = format_known_player(KNOWN_PLAYERS[known_key])
                         combined_stats = (
-                            f"[Claude-sourced stats]\n{live_stats}\n\n[Additional notes]\n{stats.strip()}"
+                            f"[Verified player data]\n{known}\n\n[Additional notes]\n{stats.strip()}"
                             if stats.strip()
-                            else f"[Claude-sourced stats]\n{live_stats}"
+                            else f"[Verified player data]\n{known}"
                         )
                     else:
-                        combined_stats = stats
+                        live_stats = fetch_player_stats(player_name, league)
+                        if live_stats:
+                            st.caption("📚 Stats sourced from Claude knowledge base")
+                            combined_stats = (
+                                f"[Claude-sourced stats]\n{live_stats}\n\n[Additional notes]\n{stats.strip()}"
+                                if stats.strip()
+                                else f"[Claude-sourced stats]\n{live_stats}"
+                            )
+                        else:
+                            combined_stats = stats
                     report = generate_report(player_name, league, combined_stats)
                     verdict = extract_verdict(report)
-                    if verdict == "SIGN":
-                        st.success("### Verdict: SIGN ✅")
-                    elif verdict == "MONITOR":
-                        st.warning("### Verdict: MONITOR ⚠️")
-                    elif verdict == "PASS":
-                        st.error("### Verdict: PASS ❌")
+                    if verdict:
+                        with st.container(border=True):
+                            if verdict == "SIGN":
+                                st.success("### Verdict: SIGN ✅")
+                            elif verdict == "MONITOR":
+                                st.warning("### Verdict: MONITOR ⚠️")
+                            elif verdict == "PASS":
+                                st.error("### Verdict: PASS ❌")
                     score, label = LEAGUE_QUALITY[league]
-                    st.subheader("League Quality vs USL")
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        st.metric(label=league, value=f"{score}/10")
-                    with col2:
-                        st.progress(score / 10)
-                        st.caption(label)
-                    st.divider()
-                    st.markdown(report)
+                    with st.container(border=True):
+                        st.subheader("League Quality vs USL")
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            st.metric(label=league, value=f"{score}/10")
+                        with col2:
+                            st.progress(score / 10)
+                            st.caption(label)
+                    with st.container(border=True):
+                        st.markdown(report)
                 except Exception as e:
                     st.error(f"Request failed: {e}")
 
@@ -194,18 +443,63 @@ with tab_discovery:
         if not ANTHROPIC_API_KEY:
             st.error("ANTHROPIC_API_KEY is not set. Add it at the top of app.py.")
         else:
-            with st.spinner("Searching..."):
+            with st.spinner("Scouting candidates..."):
                 try:
-                    results = discover_players(discovery_league, position, target_level)
-                    d_score, d_label = LEAGUE_QUALITY[discovery_league]
-                    st.subheader("Recommended Targets")
-                    meta_col1, meta_col2, meta_col3 = st.columns(3)
-                    meta_col1.metric("League", discovery_league)
-                    meta_col2.metric("Position", position)
-                    meta_col3.metric("Target", target_level)
-                    st.progress(d_score / 10)
-                    st.caption(f"{discovery_league}: {d_label}")
-                    st.divider()
-                    st.markdown(results)
+                    rows, debug = build_targets(discovery_league, position, target_level)
+                    st.session_state.discovery_rows = rows
+                    st.session_state.discovery_debug = debug
+                    st.session_state.discovery_meta = {
+                        "league": discovery_league,
+                        "position": position,
+                        "target_level": target_level,
+                    }
                 except Exception as e:
                     st.error(f"Request failed: {e}")
+                    st.session_state.discovery_rows = []
+                    st.session_state.discovery_debug = {"error": str(e)}
+
+    rows = st.session_state.get("discovery_rows")
+    if rows:
+        meta = st.session_state.get("discovery_meta", {})
+        meta_league = meta.get("league", discovery_league)
+        d_score, d_label = LEAGUE_QUALITY[meta_league]
+
+        st.subheader("Recommended Transfer Targets")
+        st.caption("Powered by Claude Scout Intelligence")
+
+        with st.container(border=True):
+            meta_col1, meta_col2, meta_col3 = st.columns(3)
+            meta_col1.metric("League", meta_league)
+            meta_col2.metric("Position", meta.get("position", position))
+            meta_col3.metric("Target", meta.get("target_level", target_level))
+            st.progress(d_score / 10)
+            st.caption(f"{meta_league}: {d_label}")
+
+        sort_choice = st.selectbox("Sort by", list(SORT_OPTIONS.keys()), key="discovery_sort")
+        sort_col, ascending = SORT_OPTIONS[sort_choice]
+
+        df = pd.DataFrame(rows)
+        for col in TARGET_COLUMNS:
+            if col not in df.columns:
+                df[col] = None
+        df = df[TARGET_COLUMNS]
+        df = df.sort_values(sort_col, ascending=ascending, na_position="last")
+
+        with st.container(border=True):
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    elif "discovery_rows" in st.session_state:
+        st.warning("Couldn't extract any candidates. Try a different combination.")
+        debug = st.session_state.get("discovery_debug", {})
+        with st.expander("Debug: what Claude returned", expanded=True):
+            if debug.get("error"):
+                st.error(debug["error"])
+            st.markdown("**Parsed names:**")
+            st.write(debug.get("parsed_names", []))
+            st.markdown("**Raw player listing (first Claude call):**")
+            st.code(debug.get("raw_listing", "") or "<empty>")
+            enrichments = debug.get("enrichments", [])
+            if enrichments:
+                st.markdown("**Per-player enrichment responses:**")
+                for entry in enrichments:
+                    st.markdown(f"- `{entry['name']}` → parsed: `{entry['parsed'] is not None}`")
+                    st.code(entry.get("raw", "") or "<empty>")
