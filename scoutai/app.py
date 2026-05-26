@@ -1,4 +1,9 @@
 import os
+import re
+from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import streamlit as st
 from anthropic import Anthropic
@@ -11,7 +16,23 @@ LEAGUES = [
     "Brazilian Serie B",
     "Polish Ekstraklasa",
     "Norwegian Eliteserien",
+    "Argentine Primera División",
+    "Colombian Liga BetPlay",
+    "Japanese J-League",
+    "Korean K-League",
+    "Mexican Liga MX",
 ]
+
+LEAGUE_QUALITY = {
+    "Brazilian Serie B": (7, "Roughly equivalent to USL Championship level"),
+    "Polish Ekstraklasa": (6, "Slightly below USL Championship"),
+    "Norwegian Eliteserien": (5, "Comparable to USL League One"),
+    "Argentine Primera División": (8, "Above USL Championship, approaching MLS level"),
+    "Colombian Liga BetPlay": (6, "Slightly below USL Championship"),
+    "Japanese J-League": (6, "Slightly below USL Championship"),
+    "Korean K-League": (6, "Slightly below USL Championship"),
+    "Mexican Liga MX": (8, "Above USL Championship, approaching MLS level"),
+}
 
 SYSTEM_PROMPT = """You are ScoutAI, an expert international soccer scout.
 Produce a structured scouting report with these sections:
@@ -43,6 +64,14 @@ def build_user_prompt(player: str, league: str, stats: str) -> str:
     return "\n\n".join(parts)
 
 
+def extract_verdict(report: str) -> Optional[str]:
+    rec_match = re.search(r"Recommendation[^\n]*\n(.+)", report, flags=re.IGNORECASE | re.DOTALL)
+    scope = rec_match.group(1) if rec_match else report
+    cleaned = re.sub(r"\(\s*Sign\s*/\s*Monitor\s*/\s*Pass\s*\)", "", scope, flags=re.IGNORECASE)
+    match = re.search(r"\b(SIGN|MONITOR|PASS)\b", cleaned, flags=re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
 def generate_report(player: str, league: str, stats: str) -> str:
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
     response = client.messages.create(
@@ -72,6 +101,22 @@ if st.button("Generate scouting report", type="primary"):
         with st.spinner("Scouting..."):
             try:
                 report = generate_report(player_name, league, stats)
+                verdict = extract_verdict(report)
+                if verdict == "SIGN":
+                    st.success("### Verdict: SIGN ✅")
+                elif verdict == "MONITOR":
+                    st.warning("### Verdict: MONITOR ⚠️")
+                elif verdict == "PASS":
+                    st.error("### Verdict: PASS ❌")
+                score, label = LEAGUE_QUALITY[league]
+                st.subheader("League Quality vs USL")
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    st.metric(label=league, value=f"{score}/10")
+                with col2:
+                    st.progress(score / 10)
+                    st.caption(label)
+                st.divider()
                 st.markdown(report)
             except Exception as e:
                 st.error(f"Request failed: {e}")
