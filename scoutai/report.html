@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ScoutAI — Pedro Rocha</title>
+<style>
+  :root {
+    --bg: #0a0d0a;
+    --panel: #10140f;
+    --panel-2: #0d110c;
+    --border: #1f2a1d;
+    --border-soft: #182217;
+    --text: #d6e0d4;
+    --muted: #6a7768;
+    --dim: #4a5447;
+    --green: #b6ff3c;
+    --green-soft: rgba(182,255,60,0.18);
+    --green-track: rgba(182,255,60,0.12);
+    --yellow: #f5d34a;
+    --red: #ff6b5b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace; }
+  .container {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 28px 60px;
+  }
+
+  /* HEADER */
+  .header {
+    display: grid;
+    grid-template-columns: 180px 1fr 180px;
+    gap: 22px;
+    margin-bottom: 26px;
+  }
+  .photo {
+    position: relative;
+    background: #0d100c;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    aspect-ratio: 1/1.05;
+    background-image: repeating-linear-gradient(45deg, transparent 0 6px, rgba(255,255,255,0.015) 6px 7px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .photo .silhouette {
+    width: 60%; height: 70%;
+    background: radial-gradient(circle at 50% 32%, #1a2118 0 22%, transparent 23%),
+                linear-gradient(to bottom, transparent 0 38%, #1a2118 38% 100%);
+    mask: radial-gradient(circle at 50% 32%, #000 0 22%, transparent 23%),
+          linear-gradient(to bottom, transparent 0 38%, #000 38% 100%);
+    opacity: 0.7;
+  }
+  .photo .verified {
+    position: absolute; top: 8px; left: 8px;
+    background: rgba(182,255,60,0.12);
+    color: var(--green);
+    border: 1px solid rgba(182,255,60,0.35);
+    font-size: 9px; letter-spacing: 0.12em;
+    padding: 4px 7px;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .photo .corner-tl {
+    position: absolute; bottom: 8px; left: 8px;
+    font-size: 8.5px; letter-spacing: 0.18em; color: var(--dim);
+  }
+  .photo .corner-tr {
+    position: absolute; bottom: 8px; right: 8px;
+    font-size: 8.5px; letter-spacing: 0.18em; color: var(--dim);
+  }
+  .head-main .meta-top {
+    font-size: 9.5px; letter-spacing: 0.22em; color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .head-main .meta-top span + span::before {
+    content: "·"; margin: 0 8px; color: var(--dim);
+  }
+  .head-main h1 {
+    font-size: 56px; font-weight: 700;
+    margin: 0 0 10px;
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+  .sub-row {
+    display: flex; align-items: center; gap: 14px;
+    font-size: 11px; color: var(--muted);
+    letter-spacing: 0.04em;
+    margin-bottom: 16px;
+  }
+  .sub-row .dot { color: var(--dim); }
+  .sub-row strong { color: var(--text); font-weight: 500; }
+
+  .sign-badge {
+    display: inline-flex; align-items: center; gap: 10px;
+    border: 1.5px solid var(--green);
+    color: var(--green);
+    padding: 10px 18px;
+    border-radius: 3px;
+    margin-bottom: 14px;
+  }
+  .sign-badge .sign-word {
+    font-size: 18px; font-weight: 700;
+    letter-spacing: 0.18em;
+  }
+  .sign-badge .sign-num {
+    font-size: 22px; font-weight: 700;
+  }
+  .sign-badge .sign-tag {
+    font-size: 9px; color: var(--muted);
+    letter-spacing: 0.18em;
+    border-left: 1px solid var(--border);
+    padding-left: 10px;
+    margin-left: 4px;
+  }
+
+  .summary {
+    max-width: 540px;
+    color: #b4bdb0;
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+
+  .head-actions { display: flex; flex-direction: column; gap: 8px; }
+  .btn {
+    display: flex; align-items: center; justify-content: flex-start; gap: 9px;
+    background: #11150f;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 11.5px;
+    padding: 9px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+  }
+  .btn:hover { background: #161a14; }
+  .btn svg { opacity: 0.7; }
+  .gen-info {
+    margin-top: 18px;
+    font-size: 9px; letter-spacing: 0.18em;
+    color: var(--muted);
+    text-align: right;
+  }
+  .gen-info .timestamp { color: var(--text); margin-top: 4px; display: block; letter-spacing: 0.08em; }
+  .gen-info .hash { color: var(--dim); display: block; margin-top: 4px; }
+
+  /* LEAGUE QUALITY INDEX */
+  .lqi {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 20px 22px;
+    margin-bottom: 16px;
+  }
+  .lqi-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 9.5px; letter-spacing: 0.22em; color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .lqi-bar {
+    position: relative;
+    height: 4px;
+    background: var(--border-soft);
+    border-radius: 2px;
+  }
+  .lqi-bar .ticks {
+    position: absolute; inset: -3px 0 -3px 0;
+    display: flex; justify-content: space-between;
+  }
+  .lqi-bar .ticks span {
+    width: 1px; height: 10px; background: var(--border);
+  }
+  .lqi-bar .fill {
+    position: absolute; top: 0; bottom: 0; left: 0;
+    width: 67%;
+    background: linear-gradient(to right, rgba(182,255,60,0.0), var(--green));
+    border-radius: 2px;
+  }
+  .lqi-bar .marker {
+    position: absolute; top: 50%; left: 67%;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--green);
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 3px rgba(182,255,60,0.18);
+  }
+  .lqi-foot {
+    display: flex; justify-content: center; gap: 14px;
+    margin-top: 12px;
+    font-size: 11px; color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+  .lqi-foot strong { color: var(--green); font-weight: 600; }
+
+  /* STATS GRID */
+  .stats {
+    display: grid; grid-template-columns: repeat(8, 1fr);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 28px;
+    overflow: hidden;
+  }
+  .stat {
+    padding: 14px 14px 16px;
+    border-right: 1px solid var(--border-soft);
+  }
+  .stat:last-child { border-right: none; }
+  .stat .label {
+    font-size: 9px; letter-spacing: 0.18em;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .stat .value {
+    font-size: 22px; font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+  .stat .sub {
+    font-size: 10px; color: var(--dim);
+    margin-top: 4px;
+    letter-spacing: 0.04em;
+  }
+
+  /* SECTIONS */
+  .section { margin-bottom: 28px; }
+  .section-head {
+    display: flex; align-items: baseline; gap: 12px;
+    font-size: 10px; letter-spacing: 0.24em;
+    color: var(--muted);
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .section-head .num { color: var(--dim); }
+  .section-head .title { color: var(--text); font-weight: 600; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px;
+  }
+  .panel-title {
+    font-size: 10px; letter-spacing: 0.22em;
+    color: var(--text); font-weight: 600;
+    margin-bottom: 16px;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .panel-title .aside {
+    font-size: 9px; color: var(--muted); font-weight: 400;
+    letter-spacing: 0.18em;
+  }
+
+  /* SECTION 01 GRID */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  /* LEAGUE ADJUSTMENT TABLE */
+  .adj-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .adj-table th {
+    text-align: right;
+    font-size: 9px; letter-spacing: 0.18em;
+    color: var(--muted); font-weight: 500;
+    padding: 6px 0 10px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .adj-table th:first-child { text-align: left; }
+  .adj-table th.proj { color: var(--green); }
+  .adj-table td {
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border-soft);
+    text-align: right;
+    color: var(--text);
+  }
+  .adj-table td:first-child {
+    text-align: left;
+    color: var(--muted);
+  }
+  .adj-table td.proj { color: var(--green); font-weight: 600; }
+  .adj-table tr:last-child td { border-bottom: none; }
+
+  .proj-note {
+    margin-top: 16px;
+    background: rgba(182,255,60,0.04);
+    border-left: 2px solid var(--green);
+    padding: 12px 14px;
+    font-size: 11.5px;
+    color: #c5cfc1;
+  }
+  .proj-note .label {
+    font-size: 9px; letter-spacing: 0.22em;
+    color: var(--green); font-weight: 600;
+    margin-bottom: 5px;
+  }
+
+  /* TECHNICAL PROFILE */
+  .tech-wrap {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 18px;
+  }
+  .radar {
+    display: flex; justify-content: center;
+    margin: 4px 0 8px;
+  }
+
+  .physical {
+    margin-top: 10px;
+  }
+  .physical .label-row {
+    font-size: 9px; letter-spacing: 0.22em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .bar-row {
+    display: grid; grid-template-columns: 80px 1fr 36px;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    font-size: 11.5px;
+  }
+  .bar-row .name { color: var(--text); }
+  .bar-row .num { color: var(--text); text-align: right; font-weight: 500; }
+  .bar {
+    position: relative;
+    height: 3px;
+    background: var(--green-track);
+    border-radius: 2px;
+  }
+  .bar .fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--green);
+    border-radius: 2px;
+  }
+
+  /* SECTION 02 TACTICAL FIT */
+  .tac-grid {
+    display: grid; grid-template-columns: 180px 1fr;
+    gap: 24px;
+  }
+  .field {
+    background: #0c100b;
+    border: 1px solid var(--border-soft);
+    border-radius: 3px;
+    padding: 10px;
+  }
+  .field .field-label {
+    font-size: 9px; letter-spacing: 0.18em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .field svg { display: block; width: 100%; height: auto; }
+  .field .primary-row {
+    display: flex; justify-content: space-between;
+    font-size: 9px; letter-spacing: 0.18em;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+  .field .primary-row strong { color: var(--text); font-weight: 600; }
+
+  .tac-body p {
+    margin: 0 0 14px;
+    color: #c1cabd;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .tac-mls-label {
+    font-size: 9px; letter-spacing: 0.22em;
+    color: var(--muted); margin: 18px 0 10px;
+  }
+  .team-fits { display: flex; flex-wrap: wrap; gap: 8px; }
+  .fit-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border);
+    padding: 5px 10px 5px 9px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: var(--text);
+  }
+  .fit-pill .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block;
+  }
+  .fit-pill .strong-tag { color: var(--green); font-size: 9px; letter-spacing: 0.16em; margin-left: 4px; }
+  .fit-pill .mod-tag { color: var(--yellow); font-size: 9px; letter-spacing: 0.16em; margin-left: 4px; }
+  .fit-pill .weak-tag { color: var(--red); font-size: 9px; letter-spacing: 0.16em; margin-left: 4px; }
+  .dot.green { background: var(--green); }
+  .dot.yellow { background: var(--yellow); }
+  .dot.red { background: var(--red); }
+
+  /* SECTION 03 COMPARABLES */
+  .compare-row {
+    display: grid; grid-template-columns: 26px 1fr 110px 50px;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 12px;
+  }
+  .compare-row:last-child { border-bottom: none; }
+  .avatar {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: #1a2017;
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--dim);
+  }
+  .compare-name strong { color: var(--text); display: block; font-weight: 500; }
+  .compare-name .club { color: var(--muted); font-size: 10.5px; margin-top: 2px; }
+  .compare-row .num { text-align: right; color: var(--green); font-weight: 600; font-size: 13px; }
+
+  /* PRESS SENTIMENT */
+  .press-item {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .press-item:last-child { border-bottom: none; }
+  .press-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .press-source { font-size: 11px; color: var(--text); font-weight: 600; }
+  .press-lang { font-size: 9px; color: var(--muted); letter-spacing: 0.14em; margin-left: 6px; }
+  .press-quote {
+    font-style: italic;
+    color: #b6bfb2;
+    font-size: 11.5px; line-height: 1.55;
+    margin: 6px 0 8px;
+  }
+  .sentiment-tag {
+    display: inline-block;
+    font-size: 9px; letter-spacing: 0.18em;
+    padding: 3px 7px;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .sentiment-tag.pos { background: rgba(182,255,60,0.08); color: var(--green); border: 1px solid rgba(182,255,60,0.3); }
+  .sentiment-tag.neu { background: rgba(245,211,74,0.06); color: var(--yellow); border: 1px solid rgba(245,211,74,0.3); }
+
+  .source-dots { display: inline-flex; gap: 3px; }
+  .source-dots span { width: 7px; height: 7px; background: var(--green); border-radius: 1px; }
+
+  /* SECTION 04 VERDICT */
+  .verdict-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+  .final-rec {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px 22px;
+    background-image: radial-gradient(ellipse at top right, rgba(182,255,60,0.05), transparent 60%);
+  }
+  .final-rec .label {
+    font-size: 9px; letter-spacing: 0.22em;
+    color: var(--muted); margin-bottom: 16px;
+  }
+  .final-rec .verdict-row {
+    display: flex; align-items: baseline; gap: 14px;
+    margin-bottom: 22px;
+  }
+  .final-rec .sign-big {
+    font-size: 78px; font-weight: 700;
+    color: var(--green);
+    line-height: 0.9;
+    letter-spacing: -0.02em;
+  }
+  .final-rec .score-big {
+    font-size: 44px; font-weight: 600;
+    color: var(--text);
+    line-height: 1;
+  }
+  .final-rec .of-100 {
+    font-size: 14px; color: var(--muted); margin-left: 2px;
+  }
+  .sub-metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .sub-metric .name {
+    font-size: 9px; letter-spacing: 0.18em;
+    color: var(--muted); margin-bottom: 6px;
+  }
+  .sub-metric .v { font-size: 14px; font-weight: 600; margin-top: 8px; }
+  .mini-bar { height: 2px; background: var(--green-track); border-radius: 1px; position: relative; }
+  .mini-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--green); border-radius: 1px; }
+
+  .risks {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px;
+  }
+  .risks .panel-title { margin-bottom: 14px; }
+  .risk-item {
+    display: grid; grid-template-columns: 24px 1fr;
+    padding: 9px 0;
+    gap: 10px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #c1cabd;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .risk-item:last-child { border-bottom: none; }
+  .risk-item .num {
+    color: var(--muted);
+    font-size: 9.5px; letter-spacing: 0.16em;
+    padding-top: 2px;
+  }
+
+  /* FOOTER */
+  .footer {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border-soft);
+    display: flex; justify-content: space-between;
+    font-size: 9px; letter-spacing: 0.2em;
+    color: var(--dim);
+  }
+  .footer .right span { color: var(--muted); }
+  .footer .right span + span::before {
+    content: "·"; margin: 0 8px; color: var(--dim);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="photo">
+      <div class="verified">✓ VERIFIED DATA</div>
+      <div class="silhouette"></div>
+      <div class="corner-tl">PLAYER PHOTO</div>
+      <div class="corner-tr">N/A — CC</div>
+    </div>
+
+    <div class="head-main">
+      <div class="meta-top">
+        <span>BR · BRAZIL</span><span>CF</span><span>23Y</span><span>184 CM</span><span>RIGHT FOOT</span>
+      </div>
+      <h1>Pedro Rocha</h1>
+      <div class="sub-row">
+        <strong>Avaí FC</strong>
+        <span class="dot">·</span>
+        <span>🇧🇷 Brazilian Serie B</span>
+        <span class="dot">·</span>
+        <span>Contract until Jun 2027</span>
+        <span class="dot">·</span>
+        <span>€1.8M</span>
+      </div>
+
+      <div class="sign-badge">
+        <span class="sign-word">SIGN</span>
+        <span class="sign-num">82</span>
+        <span class="sign-tag">SCOUTAI PROJECTION · MLS FIT</span>
+      </div>
+
+      <div class="summary">
+        High-ceiling target striker with strong league-adjusted output. Projects as a starting MLS #9 with room for resale to top European leagues.
+      </div>
+    </div>
+
+    <div>
+      <div class="head-actions">
+        <button class="btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          Add to watchlist
+        </button>
+        <button class="btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export PDF
+        </button>
+        <button class="btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Share report
+        </button>
+      </div>
+      <div class="gen-info">
+        GENERATED
+        <span class="timestamp">26 MAY 2026 · 14:22</span>
+        <span class="hash mono">REP_R3CKMRX1JAR04X5</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- LEAGUE QUALITY INDEX -->
+  <div class="lqi">
+    <div class="lqi-head">
+      <span>LEAGUE QUALITY INDEX</span>
+      <span>1.0 — 10.0</span>
+    </div>
+    <div class="lqi-bar">
+      <div class="fill"></div>
+      <div class="ticks">
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="marker"></div>
+    </div>
+    <div class="lqi-foot">
+      <span>BRAZILIAN SERIE B</span>
+      <strong>6.8</strong>
+    </div>
+  </div>
+
+  <!-- STATS GRID -->
+  <div class="stats">
+    <div class="stat">
+      <div class="label">APPEARANCES</div>
+      <div class="value">31</div>
+      <div class="sub">this season</div>
+    </div>
+    <div class="stat">
+      <div class="label">GOALS</div>
+      <div class="value">14</div>
+      <div class="sub">xG 12.4</div>
+    </div>
+    <div class="stat">
+      <div class="label">ASSISTS</div>
+      <div class="value">6</div>
+      <div class="sub">xA 4.1</div>
+    </div>
+    <div class="stat">
+      <div class="label">MINUTES</div>
+      <div class="value">2,614</div>
+      <div class="sub">84% av.</div>
+    </div>
+    <div class="stat">
+      <div class="label">SHOTS / 90</div>
+      <div class="value">3.1</div>
+      <div class="sub">18.4% conv.</div>
+    </div>
+    <div class="stat">
+      <div class="label">KEY PASSES / 90</div>
+      <div class="value">1.6</div>
+      <div class="sub">press resist.</div>
+    </div>
+    <div class="stat">
+      <div class="label">AERIAL DUELS WON</div>
+      <div class="value">64%</div>
+      <div class="sub">top 12% league</div>
+    </div>
+    <div class="stat">
+      <div class="label">PRESSURES / 90</div>
+      <div class="value">18.2</div>
+      <div class="sub">below MLS avg</div>
+    </div>
+  </div>
+
+  <!-- SECTION 01 -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num mono">01</span>
+      <span class="title">LEAGUE ADJUSTMENT &amp; PROFILE</span>
+    </div>
+    <div class="grid-2">
+
+      <div class="panel">
+        <div class="panel-title">
+          LEAGUE ADJUSTMENT
+          <span class="aside">SERIE B → MLS</span>
+        </div>
+        <table class="adj-table">
+          <thead>
+            <tr><th></th><th>RAW</th><th class="proj">PROJECTED</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Goals (season)</td><td>14</td><td class="proj">11</td></tr>
+            <tr><td>Assists (season)</td><td>6</td><td class="proj">4</td></tr>
+            <tr><td>xG</td><td>12.4</td><td class="proj">9.6</td></tr>
+            <tr><td>xA</td><td>4.1</td><td class="proj">3</td></tr>
+          </tbody>
+        </table>
+        <div class="proj-note">
+          <div class="label">PROJECTION</div>
+          MLS: 11–14 goals / 4–6 assists in a starting role
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          TECHNICAL PROFILE
+          <span class="aside">0 — 100</span>
+        </div>
+        <div class="radar">
+          <svg width="260" height="200" viewBox="-130 -100 260 200">
+            <defs>
+              <radialGradient id="rg" cx="0" cy="0" r="90" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#b6ff3c" stop-opacity="0.4"/>
+                <stop offset="1" stop-color="#b6ff3c" stop-opacity="0.05"/>
+              </radialGradient>
+            </defs>
+            <!-- background rings (hex) -->
+            <g stroke="#1f2a1d" fill="none" stroke-width="1">
+              <polygon points="80,0 40,-69.3 -40,-69.3 -80,0 -40,69.3 40,69.3"/>
+              <polygon points="60,0 30,-52 -30,-52 -60,0 -30,52 30,52"/>
+              <polygon points="40,0 20,-34.6 -20,-34.6 -40,0 -20,34.6 20,34.6"/>
+              <polygon points="20,0 10,-17.3 -10,-17.3 -20,0 -10,17.3 10,17.3"/>
+            </g>
+            <g stroke="#1f2a1d" stroke-width="1">
+              <line x1="0" y1="0" x2="80" y2="0"/>
+              <line x1="0" y1="0" x2="40" y2="-69.3"/>
+              <line x1="0" y1="0" x2="-40" y2="-69.3"/>
+              <line x1="0" y1="0" x2="-80" y2="0"/>
+              <line x1="0" y1="0" x2="-40" y2="69.3"/>
+              <line x1="0" y1="0" x2="40" y2="69.3"/>
+            </g>
+            <!-- data polygon: finishing(86), first touch(74), aerial(82), hold-up(78), ball mov(64), long range(58) -->
+            <polygon points="0,-68.8 29.6,-51.3 32.8,56.8 -62.4,0 -25.6,-44.4 -23.2,40.1"
+                     fill="url(#rg)" stroke="#b6ff3c" stroke-width="1.5"/>
+            <g fill="#b6ff3c">
+              <circle cx="0" cy="-68.8" r="2.2"/>
+              <circle cx="29.6" cy="-51.3" r="2.2"/>
+              <circle cx="32.8" cy="56.8" r="2.2"/>
+              <circle cx="-62.4" cy="0" r="2.2"/>
+              <circle cx="-25.6" cy="-44.4" r="2.2"/>
+              <circle cx="-23.2" cy="40.1" r="2.2"/>
+            </g>
+            <!-- labels -->
+            <g fill="#d6e0d4" font-size="8.5" font-family="Inter, sans-serif" letter-spacing="1.5" text-anchor="middle">
+              <text x="0" y="-82">FINISHING</text>
+              <text x="58" y="-72">FIRST TOUCH</text>
+              <text x="58" y="80">AERIAL ABILITY</text>
+              <text x="0" y="90">HOLD-UP PLAY</text>
+              <text x="-58" y="80">BALL MOVEMENT</text>
+              <text x="-58" y="-72">LONG RANGE</text>
+            </g>
+          </svg>
+        </div>
+        <div class="physical">
+          <div class="label-row">PHYSICAL</div>
+          <div class="bar-row">
+            <span class="name">Speed</span>
+            <span class="bar"><span class="fill" style="width:72%"></span></span>
+            <span class="num">72</span>
+          </div>
+          <div class="bar-row">
+            <span class="name">Strength</span>
+            <span class="bar"><span class="fill" style="width:85%"></span></span>
+            <span class="num">85</span>
+          </div>
+          <div class="bar-row">
+            <span class="name">Stamina</span>
+            <span class="bar"><span class="fill" style="width:77%"></span></span>
+            <span class="num">77</span>
+          </div>
+          <div class="bar-row">
+            <span class="name">Agility</span>
+            <span class="bar"><span class="fill" style="width:68%"></span></span>
+            <span class="num">68</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- SECTION 02 -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num mono">02</span>
+      <span class="title">TACTICAL FIT</span>
+    </div>
+    <div class="panel">
+      <div class="tac-grid">
+        <div class="field">
+          <div class="field-label">POSITION</div>
+          <svg viewBox="0 0 100 140" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="96" height="136" fill="none" stroke="#1f2a1d" stroke-width="0.6"/>
+            <line x1="2" y1="70" x2="98" y2="70" stroke="#1f2a1d" stroke-width="0.6"/>
+            <circle cx="50" cy="70" r="9" fill="none" stroke="#1f2a1d" stroke-width="0.6"/>
+            <rect x="28" y="2" width="44" height="18" fill="none" stroke="#1f2a1d" stroke-width="0.6"/>
+            <rect x="38" y="2" width="24" height="8" fill="none" stroke="#1f2a1d" stroke-width="0.6"/>
+            <rect x="28" y="120" width="44" height="18" fill="none" stroke="#1f2a1d" stroke-width="0.6"/>
+            <rect x="38" y="130" width="24" height="8" fill="none" stroke="#1f2a1d" stroke-width="0.6"/>
+            <circle cx="50" cy="22" r="4" fill="#b6ff3c"/>
+            <circle cx="50" cy="22" r="7" fill="none" stroke="#b6ff3c" stroke-opacity="0.35" stroke-width="1"/>
+          </svg>
+          <div class="primary-row">
+            <span>PRIMARY</span>
+            <strong>CF</strong>
+          </div>
+        </div>
+
+        <div class="tac-body">
+          <div class="panel-title" style="margin-bottom: 14px;">
+            TACTICAL FIT
+            <span class="aside">SYSTEM &amp; ROLE NOTES</span>
+          </div>
+          <p>Most effective as a lone #9 in a 4-2-3-1 or partnered #9 in a 4-4-2. Thrives on crosses and second-ball duels. Limited in deep-build phases — better suited to direct, transitional sides. Fits Inter Miami or Houston Dynamo systems; less suited to possession-heavy LAFC profile.</p>
+
+          <div class="tac-mls-label">MLS TEAM FIT</div>
+          <div class="team-fits">
+            <span class="fit-pill"><span class="dot green"></span>Inter Miami<span class="strong-tag">STRONG</span></span>
+            <span class="fit-pill"><span class="dot green"></span>Houston Dynamo<span class="strong-tag">STRONG</span></span>
+            <span class="fit-pill"><span class="dot yellow"></span>Columbus Crew<span class="mod-tag">MODERATE</span></span>
+            <span class="fit-pill"><span class="dot yellow"></span>NYCFC<span class="mod-tag">MODERATE</span></span>
+            <span class="fit-pill"><span class="dot red"></span>LAFC<span class="weak-tag">WEAK</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 03 -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num mono">03</span>
+      <span class="title">COMPARABLES &amp; MARKET CONTEXT</span>
+    </div>
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-title">
+          COMPARABLE PLAYERS
+          <span class="aside">MLS / SIMILAR ROLE</span>
+        </div>
+        <div class="compare-row">
+          <span class="avatar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 22c0-4 4-7 8-7s8 3 8 7"/></svg>
+          </span>
+          <div class="compare-name">
+            <strong>Cucho Hernández</strong>
+            <div class="club">Columbus Crew</div>
+          </div>
+          <span class="bar"><span class="fill" style="width:86%"></span></span>
+          <span class="num">86%</span>
+        </div>
+        <div class="compare-row">
+          <span class="avatar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 22c0-4 4-7 8-7s8 3 8 7"/></svg>
+          </span>
+          <div class="compare-name">
+            <strong>Dániel Gazdag</strong>
+            <div class="club">Philadelphia Union</div>
+          </div>
+          <span class="bar"><span class="fill" style="width:78%"></span></span>
+          <span class="num">78%</span>
+        </div>
+        <div class="compare-row">
+          <span class="avatar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 22c0-4 4-7 8-7s8 3 8 7"/></svg>
+          </span>
+          <div class="compare-name">
+            <strong>Jesús Ferreira</strong>
+            <div class="club">Dallas / Seattle</div>
+          </div>
+          <span class="bar"><span class="fill" style="width:71%"></span></span>
+          <span class="num">71%</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          LOCAL PRESS SENTIMENT
+          <span class="aside">3 SOURCES · PT-BR <span class="source-dots"><span></span><span></span><span></span></span></span>
+        </div>
+
+        <div class="press-item">
+          <div class="press-head">
+            <span><span class="press-source">Globo Esporte</span><span class="press-lang">PT-BR</span></span>
+          </div>
+          <div class="press-quote">"Translated: 'Rocha has matured into the most consistent finisher in the Serie B campaign. Scouts from three European leagues attended the match against Sport.'"</div>
+          <span class="sentiment-tag pos">● POSITIVE</span>
+        </div>
+
+        <div class="press-item">
+          <div class="press-head">
+            <span><span class="press-source">UOL Esporte</span><span class="press-lang">PT-BR</span></span>
+          </div>
+          <div class="press-quote">"Translated: 'His aerial dominance and link play with the wingers have transformed Avaí's attacking patterns. A move abroad is considered inevitable.'"</div>
+          <span class="sentiment-tag pos">● POSITIVE</span>
+        </div>
+
+        <div class="press-item">
+          <div class="press-head">
+            <span><span class="press-source">ge.globo Catarinense</span><span class="press-lang">PT-BR</span></span>
+          </div>
+          <div class="press-quote">"Translated: 'Despite the goal tally, Rocha disappears in matches when Avaí is forced to defend deeply. His pressing intensity is still developing.'"</div>
+          <span class="sentiment-tag neu">● NEUTRAL</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 04 -->
+  <div class="section">
+    <div class="section-head">
+      <span class="num mono">04</span>
+      <span class="title">VERDICT &amp; RISK</span>
+    </div>
+    <div class="verdict-grid">
+
+      <div class="final-rec">
+        <div class="label">FINAL RECOMMENDATION</div>
+        <div class="verdict-row">
+          <span class="sign-big">SIGN</span>
+          <span class="score-big">82<span class="of-100"> / 100</span></span>
+        </div>
+        <div class="sub-metrics">
+          <div class="sub-metric">
+            <div class="name">OUTPUT</div>
+            <div class="mini-bar"><div class="fill" style="width:84%"></div></div>
+            <div class="v">84</div>
+          </div>
+          <div class="sub-metric">
+            <div class="name">TRANSLATION</div>
+            <div class="mini-bar"><div class="fill" style="width:78%"></div></div>
+            <div class="v">78</div>
+          </div>
+          <div class="sub-metric">
+            <div class="name">MARKET CEILING</div>
+            <div class="mini-bar"><div class="fill" style="width:86%"></div></div>
+            <div class="v">86</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="risks">
+        <div class="panel-title">RISKS &amp; FLAGS</div>
+        <div class="risk-item">
+          <span class="num">01</span>
+          <span>Limited exposure to top-flight Brazilian football — small sample at higher level.</span>
+        </div>
+        <div class="risk-item">
+          <span class="num">02</span>
+          <span>Pressing intensity inconsistent; questionable fit for high-block MLS sides.</span>
+        </div>
+        <div class="risk-item">
+          <span class="num">03</span>
+          <span>Agent reportedly fielding offers from Belgian Pro League — competition for signature.</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <div class="left">SCOUTAI · TWO-STAGE CLAUDE PIPELINE · LEAGUE-ADJUSTED PROJECTION MODEL V0.4</div>
+    <div class="right">
+      <span>Stats: FBref</span>
+      <span>Sofascore</span>
+      <span>Transfermarkt</span>
+      <span>WhoScored</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -25,6 +25,7 @@ LEAGUES = [
     "Argentine Primera División",
     "Colombian Liga BetPlay",
     "Mexican Liga MX",
+    "MLS",
 ]
 
 DISCOVERY_LEAGUES = LEAGUES + ["Japanese J-League", "Korean K-League"]
@@ -60,6 +61,17 @@ KNOWN_PLAYERS = {
         "nationality": "Polish",
         "league": "Polish Ekstraklasa",
     },
+    "lionel messi": {
+        "age": 37,
+        "club": "Inter Miami",
+        "position": "Right Winger / Attacking Midfielder",
+        "goals": 11,
+        "assists": 8,
+        "appearances": 19,
+        "market_value": "€25M",
+        "nationality": "Argentine",
+        "league": "MLS",
+    },
 }
 
 
@@ -76,6 +88,7 @@ LEAGUE_QUALITY = {
     "Mexican Liga MX": (8, "Above USL Championship, approaching MLS level"),
     "Japanese J-League": (6, "Slightly below USL Championship"),
     "Korean K-League": (6, "Slightly below USL Championship"),
+    "MLS": (9, "MLS — baseline comparison level"),
 }
 
 SYSTEM_PROMPT = """You are ScoutAI, an expert international soccer scout.
@@ -117,6 +130,81 @@ def extract_verdict(report: str) -> Optional[str]:
     cleaned = re.sub(r"\(\s*Sign\s*/\s*Monitor\s*/\s*Pass\s*\)", "", scope, flags=re.IGNORECASE)
     match = re.search(r"\b(SIGN|MONITOR|PASS)\b", cleaned, flags=re.IGNORECASE)
     return match.group(1).upper() if match else None
+
+
+LEAGUE_ADJUSTMENT_FACTORS = {
+    "Brazilian Serie B": {"goals": 0.65, "assists": 0.70, "label": "USL Championship equivalent"},
+    "Polish Ekstraklasa": {"goals": 0.58, "assists": 0.62, "label": "Slightly below USL Championship"},
+    "Norwegian Eliteserien": {"goals": 0.52, "assists": 0.55, "label": "USL League One equivalent"},
+    "Argentine Primera División": {"goals": 0.72, "assists": 0.75, "label": "Above USL Championship"},
+    "Mexican Liga MX": {"goals": 0.78, "assists": 0.80, "label": "Approaching MLS level"},
+    "Colombian Liga BetPlay": {"goals": 0.55, "assists": 0.58, "label": "USL League One equivalent"},
+    "MLS": {"goals": 1.0, "assists": 1.0, "label": "MLS — baseline comparison level"},
+}
+
+
+def parse_raw_stats(text: str) -> dict:
+    if not text:
+        return {}
+    out = {}
+    patterns = [
+        ("goals", r"goals?\s*[:\-]?\s*(\d+)"),
+        ("goals", r"(\d+)\s*goals?\b"),
+        ("assists", r"assists?\s*[:\-]?\s*(\d+)"),
+        ("assists", r"(\d+)\s*assists?\b"),
+        ("appearances", r"appearances?\s*[:\-]?\s*(\d+)"),
+        ("appearances", r"(\d+)\s*(?:appearances|apps|matches|games)\b"),
+    ]
+    for key, pattern in patterns:
+        if key in out:
+            continue
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            try:
+                out[key] = int(match.group(1))
+            except ValueError:
+                pass
+    return out
+
+
+def compute_projection(raw: dict, league: str) -> Optional[dict]:
+    factor = LEAGUE_ADJUSTMENT_FACTORS.get(league)
+    if not factor or raw.get("goals") is None:
+        return None
+    raw_goals = raw["goals"]
+    raw_assists = raw.get("assists", 0)
+    apps = raw.get("appearances")
+    adjusted_goals = raw_goals * factor["goals"]
+    adjusted_assists = raw_assists * factor["assists"]
+    proj = {
+        "raw_goals": raw_goals,
+        "raw_assists": raw_assists,
+        "appearances": apps,
+        "goals_factor": factor["goals"],
+        "assists_factor": factor["assists"],
+        "label": factor["label"],
+        "adjusted_goals": round(adjusted_goals, 1),
+        "adjusted_assists": round(adjusted_assists, 1),
+    }
+    if apps and apps > 0:
+        proj["goals_per_90"] = round(adjusted_goals / apps, 2)
+    return proj
+
+
+def format_projection_for_prompt(proj: dict, league: str) -> str:
+    apps_clause = f" in {proj['appearances']} apps" if proj.get("appearances") else ""
+    gp90_clause = (
+        f"\nProjected goals per 90 at USL Championship level: {proj['goals_per_90']}"
+        if proj.get("goals_per_90") is not None else ""
+    )
+    return (
+        f"[League-adjusted projection for {league}]\n"
+        f"Raw season: {proj['raw_goals']} goals, {proj['raw_assists']} assists{apps_clause}\n"
+        f"League adjustment factors: {proj['goals_factor']}x goals, {proj['assists_factor']}x assists ({proj['label']})\n"
+        f"Projected USL Championship output: {proj['adjusted_goals']} goals, {proj['adjusted_assists']} assists"
+        f"{gp90_clause}\n"
+        f"Reference these adjusted numbers in your scouting report."
+    )
 
 
 @st.cache_resource
@@ -352,6 +440,27 @@ def render_report_view(entry: dict) -> None:
             st.progress(score / 10)
             st.caption(label)
 
+    projection = entry.get("projection")
+    if projection:
+        with st.container(border=True):
+            st.subheader("Statistical Projection")
+            pcol1, pcol2, pcol3, pcol4 = st.columns(4)
+            raw_summary = f"{projection['raw_goals']}G"
+            if projection.get("raw_assists"):
+                raw_summary += f" / {projection['raw_assists']}A"
+            if projection.get("appearances"):
+                raw_summary += f" in {projection['appearances']}"
+            pcol1.metric("Raw Stats", raw_summary)
+            pcol2.metric("Adjustment Factor", f"{projection['goals_factor']}x")
+            pcol3.metric("Projected USL Goals (per season)", projection["adjusted_goals"])
+            if projection.get("appearances"):
+                pcol3.caption(f"Based on {projection['appearances']} appearances")
+            if projection.get("goals_per_90") is not None:
+                pcol4.metric("Goals per 90 (USL)", projection["goals_per_90"])
+            else:
+                pcol4.metric("Goals per 90 (USL)", "—")
+            st.caption(projection["label"])
+
     with st.container(border=True):
         st.markdown(report)
 
@@ -537,6 +646,15 @@ with tab_report:
                         )
                     else:
                         combined_stats = stats.strip()
+
+                    projection = compute_projection(parse_raw_stats(combined_stats), league)
+                    if projection:
+                        combined_stats = (
+                            f"{combined_stats}\n\n{format_projection_for_prompt(projection, league)}"
+                            if combined_stats
+                            else format_projection_for_prompt(projection, league)
+                        )
+
                     report = generate_report(player_name.strip(), league, combined_stats)
                     verdict = extract_verdict(report)
                     entry = {
@@ -545,6 +663,7 @@ with tab_report:
                         "verdict": verdict,
                         "report": report,
                         "source_badge": source_badge,
+                        "projection": projection,
                     }
                     st.session_state.history.append(entry)
                     st.session_state.selected_idx = len(st.session_state.history) - 1
@@ -630,3 +749,4 @@ with tab_discovery:
                 for entry in enrichments:
                     st.markdown(f"- `{entry['name']}` → parsed: `{entry['parsed'] is not None}`")
                     st.code(entry.get("raw", "") or "<empty>")
+
