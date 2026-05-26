@@ -1,7 +1,9 @@
 import json
 import os
 import re
+import smtplib
 from concurrent.futures import ThreadPoolExecutor
+from email.message import EmailMessage
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -10,6 +12,7 @@ load_dotenv()
 import pandas as pd
 import streamlit as st
 from anthropic import Anthropic
+from fpdf import FPDF
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -23,6 +26,8 @@ LEAGUES = [
     "Colombian Liga BetPlay",
     "Mexican Liga MX",
 ]
+
+DISCOVERY_LEAGUES = LEAGUES + ["Japanese J-League", "Korean K-League"]
 
 KNOWN_PLAYERS = {
     "pedro rocha": {
@@ -69,6 +74,8 @@ LEAGUE_QUALITY = {
     "Argentine Primera División": (8, "Above USL Championship, approaching MLS level"),
     "Colombian Liga BetPlay": (6, "Slightly below USL Championship"),
     "Mexican Liga MX": (8, "Above USL Championship, approaching MLS level"),
+    "Japanese J-League": (6, "Slightly below USL Championship"),
+    "Korean K-League": (6, "Slightly below USL Championship"),
 }
 
 SYSTEM_PROMPT = """You are ScoutAI, an expert international soccer scout.
@@ -85,6 +92,9 @@ Produce a structured scouting report with these sections:
 9. Recommendation (Sign / Monitor / Pass) with reasoning
 
 Be concise, specific, and avoid filler. Use markdown headings.
+
+Research instructions:
+If no specific stats are provided for the player, draw on your own knowledge of their recent career (current club, position, recent form, notable performances) to ground the report in real context. Do not fabricate exact numbers you do not know — qualify uncertain claims with hedges like "reportedly" or "around". If you have verified stats provided in the prompt, anchor on those.
 
 League context:
 Brazilian Serie B is roughly equivalent to USL Championship level. Polish Ekstraklasa is slightly below USL Championship. Norwegian Eliteserien is comparable to USL League One. Always include a specific sentence stating what the player's league translates to in American soccer terms."""
@@ -109,42 +119,17 @@ def extract_verdict(report: str) -> Optional[str]:
     return match.group(1).upper() if match else None
 
 
-STAT_FIELDS = ["goals", "assists", "appearances", "position", "age", "club"]
+@st.cache_resource
+def get_anthropic_client() -> Anthropic:
+    return Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def fetch_player_stats(player_name: str, league: str) -> Optional[str]:
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    prompt = (
-        f"Return only a JSON object with real stats for {player_name} in {league}. "
-        f"Fields: goals, assists, appearances, position, age, club. "
-        f"If you don't know exact stats, use null for that field."
-    )
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            return None
-        data = json.loads(match.group(0))
-        lines = []
-        for key in STAT_FIELDS:
-            value = data.get(key)
-            if value is not None:
-                lines.append(f"{key.capitalize()}: {value}")
-        return "\n".join(lines) if lines else None
-    except Exception:
-        return None
-
-
+@st.cache_data(ttl=3600, show_spinner=False)
 def generate_report(player: str, league: str, stats: str) -> str:
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = get_anthropic_client()
     response = client.messages.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=1400,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": build_user_prompt(player, league, stats)}],
     )
@@ -152,7 +137,7 @@ def generate_report(player: str, league: str, stats: str) -> str:
 
 
 def discover_players(league: str, position: str, target_level: str) -> str:
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = get_anthropic_client()
     prompt = (
         f"You are a soccer scout. List the top 5 players in {league} at position {position} "
         f"who would be realistic transfer targets for a {target_level} club. "
@@ -207,7 +192,7 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 
 def enrich_player(player_name: str, league: str, target_level: str) -> tuple:
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = get_anthropic_client()
     prompt = (
         f"Return only a JSON object for soccer player {player_name} in {league}. "
         f"Required fields: name (string), age (int), club (string), goals (int), assists (int), "
@@ -266,7 +251,149 @@ def build_targets(league: str, position: str, target_level: str) -> tuple:
     return rows, debug
 
 
+def _latin1(text: str) -> str:
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _strip_markdown(text: str) -> str:
+    text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    text = re.sub(r"^\s*[-*]\s+", "  • ", text, flags=re.MULTILINE)
+    return text
+
+
+def build_report_pdf(player_name: str, league: str, verdict: Optional[str], report: str) -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.multi_cell(0, 10, _latin1(player_name))
+    pdf.ln(1)
+
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 7, _latin1(f"League: {league}"), new_x="LMARGIN", new_y="NEXT")
+    if verdict:
+        pdf.cell(0, 7, _latin1(f"Verdict: {verdict}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+
+    pdf.set_draw_color(180, 180, 180)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+    pdf.ln(5)
+
+    pdf.set_font("Helvetica", "", 11)
+    body = _latin1(_strip_markdown(report))
+    pdf.multi_cell(0, 6, body)
+
+    return bytes(pdf.output())
+
+
+def build_email_body(entry: dict) -> str:
+    verdict = entry.get("verdict") or "N/A"
+    header = (
+        f"Player: {entry['player_name']}\n"
+        f"League: {entry['league']}\n"
+        f"Verdict: {verdict}\n"
+        + "-" * 50 + "\n\n"
+    )
+    body = _strip_markdown(entry["report"])
+    footer = "\n\n----\nGenerated by ScoutAI"
+    return header + body + footer
+
+
+def send_report_email(recipient: str, subject: str, body: str) -> None:
+    sender = os.environ.get("GMAIL_SENDER", "").strip()
+    password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+    if not sender or not password:
+        raise RuntimeError("Email not configured. Set GMAIL_SENDER and GMAIL_APP_PASSWORD in .env.")
+
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
+        server.login(sender, password)
+        server.send_message(msg)
+
+
+def render_report_view(entry: dict) -> None:
+    if entry.get("source_badge"):
+        kind, text = entry["source_badge"]
+        if kind == "success":
+            st.success(text)
+        else:
+            st.caption(text)
+
+    verdict = entry.get("verdict")
+    league_name = entry["league"]
+    report = entry["report"]
+    player = entry["player_name"]
+
+    if verdict:
+        with st.container(border=True):
+            if verdict == "SIGN":
+                st.success("### Verdict: SIGN ✅")
+            elif verdict == "MONITOR":
+                st.warning("### Verdict: MONITOR ⚠️")
+            elif verdict == "PASS":
+                st.error("### Verdict: PASS ❌")
+
+    score, label = LEAGUE_QUALITY[league_name]
+    with st.container(border=True):
+        st.subheader("League Quality vs USL")
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.metric(label=league_name, value=f"{score}/10")
+        with col2:
+            st.progress(score / 10)
+            st.caption(label)
+
+    with st.container(border=True):
+        st.markdown(report)
+
+    pdf_bytes = build_report_pdf(player, league_name, verdict, report)
+    safe_slug = re.sub(r"[^A-Za-z0-9]+", "_", player.strip()) or "report"
+    idx = st.session_state.get("selected_idx", 0)
+    st.download_button(
+        "Download Report as PDF",
+        data=pdf_bytes,
+        file_name=f"scoutai_{safe_slug}.pdf",
+        mime="application/pdf",
+        key=f"download_pdf_{idx}",
+    )
+
+    with st.expander("Send Report"):
+        recipient = st.text_input(
+            "Recipient email",
+            key=f"email_recipient_{idx}",
+            placeholder="scout@club.com",
+        )
+        if st.button("Send", key=f"email_send_{idx}"):
+            recipient_clean = recipient.strip()
+            if not recipient_clean or not re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+", recipient_clean):
+                st.error("Enter a valid email address.")
+            else:
+                try:
+                    subject = f"ScoutAI Report — {player} ({league_name})"
+                    body = build_email_body(entry)
+                    send_report_email(recipient_clean, subject, body)
+                    st.success(f"Sent to {recipient_clean}")
+                except Exception as e:
+                    st.error(f"Send failed: {e}")
+
+
 st.set_page_config(page_title="ScoutAI", page_icon=None, layout="centered")
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "selected_idx" not in st.session_state:
+    st.session_state.selected_idx = None
+
+VERDICT_BADGES = {"SIGN": "✅", "MONITOR": "⚠️", "PASS": "❌"}
 
 CUSTOM_CSS = """
 <style>
@@ -372,6 +499,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+with st.sidebar:
+    st.header("Scouting History")
+    if not st.session_state.history:
+        st.caption("No reports yet. Generate one to start building history.")
+    else:
+        for i, entry in enumerate(st.session_state.history):
+            badge = VERDICT_BADGES.get(entry.get("verdict"), "•")
+            label = f"{badge}  {entry['player_name']}  —  {entry['league']}"
+            if st.button(label, key=f"hist_{i}", use_container_width=True):
+                st.session_state.selected_idx = i
+
 tab_report, tab_discovery = st.tabs(["Scouting Report", "Find Players"])
 
 with tab_report:
@@ -388,8 +526,9 @@ with tab_report:
             with st.spinner("Scouting..."):
                 try:
                     known_key = player_name.strip().lower()
+                    source_badge = None
                     if known_key in KNOWN_PLAYERS:
-                        st.success("✓ Verified player data")
+                        source_badge = ("success", "✓ Verified player data")
                         known = format_known_player(KNOWN_PLAYERS[known_key])
                         combined_stats = (
                             f"[Verified player data]\n{known}\n\n[Additional notes]\n{stats.strip()}"
@@ -397,45 +536,33 @@ with tab_report:
                             else f"[Verified player data]\n{known}"
                         )
                     else:
-                        live_stats = fetch_player_stats(player_name, league)
-                        if live_stats:
-                            st.caption("📚 Stats sourced from Claude knowledge base")
-                            combined_stats = (
-                                f"[Claude-sourced stats]\n{live_stats}\n\n[Additional notes]\n{stats.strip()}"
-                                if stats.strip()
-                                else f"[Claude-sourced stats]\n{live_stats}"
-                            )
-                        else:
-                            combined_stats = stats
-                    report = generate_report(player_name, league, combined_stats)
+                        combined_stats = stats.strip()
+                    report = generate_report(player_name.strip(), league, combined_stats)
                     verdict = extract_verdict(report)
-                    if verdict:
-                        with st.container(border=True):
-                            if verdict == "SIGN":
-                                st.success("### Verdict: SIGN ✅")
-                            elif verdict == "MONITOR":
-                                st.warning("### Verdict: MONITOR ⚠️")
-                            elif verdict == "PASS":
-                                st.error("### Verdict: PASS ❌")
-                    score, label = LEAGUE_QUALITY[league]
-                    with st.container(border=True):
-                        st.subheader("League Quality vs USL")
-                        col1, col2 = st.columns([1, 3])
-                        with col1:
-                            st.metric(label=league, value=f"{score}/10")
-                        with col2:
-                            st.progress(score / 10)
-                            st.caption(label)
-                    with st.container(border=True):
-                        st.markdown(report)
+                    entry = {
+                        "player_name": player_name.strip(),
+                        "league": league,
+                        "verdict": verdict,
+                        "report": report,
+                        "source_badge": source_badge,
+                    }
+                    st.session_state.history.append(entry)
+                    st.session_state.selected_idx = len(st.session_state.history) - 1
                 except Exception as e:
                     st.error(f"Request failed: {e}")
+
+    selected_idx = st.session_state.get("selected_idx")
+    if (
+        selected_idx is not None
+        and 0 <= selected_idx < len(st.session_state.history)
+    ):
+        render_report_view(st.session_state.history[selected_idx])
 
 with tab_discovery:
     st.subheader("Player Discovery")
     st.caption("Surface transfer targets by league, position, and destination tier.")
 
-    discovery_league = st.selectbox("League", LEAGUES, key="discovery_league")
+    discovery_league = st.selectbox("League", DISCOVERY_LEAGUES, key="discovery_league")
     position = st.selectbox("Position", ["Striker", "Midfielder", "Defender", "Goalkeeper"])
     target_level = st.selectbox("Target level", ["MLS", "USL Championship", "USL League One"])
 
