@@ -2,3 +2,5 @@ streamlit
 anthropic
 python-dotenv
 fpdf2
+flask
+flask-cors
